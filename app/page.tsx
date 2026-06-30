@@ -1,863 +1,460 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Legend, Cell,
-} from 'recharts';
+import { useEffect, useState, useCallback } from 'react';
+import type { Analysis, EnrichedTransfer, KinsPrice, OhlcvCandle, PnlSummary, Tab } from '@/types';
+import { enrichTransfers, calculatePnl } from '@/lib/pnl';
+import { buildReportText, exportSummaryJson, exportTradesCsv } from '@/lib/export';
+import { fmtKins, fmtUsd, fmtPct, fmtKinsPrice, fmtDateShort } from '@/lib/format';
 
-/* ─── Types ─────────────────────────────────────────────────────────────────── */
+import { Header }            from '@/components/Header';
+import { MetricCard }        from '@/components/MetricCard';
+import { TradeTable }        from '@/components/TradeTable';
+import { CounterpartyTable } from '@/components/CounterpartyTable';
+import { ResourceTable }     from '@/components/ResourceTable';
+import { ActiveOrdersTab }   from '@/components/ActiveOrdersTab';
+import { PriceTab }          from '@/components/PriceTab';
+import { SettingsPanel }     from '@/components/SettingsPanel';
+import { EmptyState }        from '@/components/EmptyState';
+import { DailyChart, BuySellSummaryChart, CumulativePnlChart } from '@/components/Charts';
 
-type Transfer = {
-  date: string;
-  direction: 'in' | 'out';
-  amount: number;
-  counterparty: string;
-  signature: string;
-  solscan: string;
-};
+/* ─── Data fetching helpers ─────────────────────────────────────────────── */
 
-type Counterparty = {
-  address: string;
-  in: number;
-  out: number;
-  count: number;
-  net: number;
-};
-
-type Summary = {
-  totalTransfersChecked: number;
-  kinsTransfers: number;
-  buyCount: number;
-  sellCount: number;
-  totalBuyKins: number;
-  totalSellKins: number;
-  netKins: number;
-};
-
-type Analysis = {
-  wallet: string;
-  kinsMint: string;
-  filteredByMarketplaceCounterparties: boolean;
-  summary: Summary;
-  counterparties: Counterparty[];
-  transfers: Transfer[];
-};
-
-type Tab = 'overview' | 'trades' | 'counterparties' | 'items' | 'settings';
-type TradeFilter = 'all' | 'buy' | 'sell';
-type SortMode = 'newest' | 'oldest' | 'biggest';
-
-/* ─── Helpers ───────────────────────────────────────────────────────────────── */
-
-function fmt(v: number, d = 2): string {
-  return new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: d,
-    minimumFractionDigits: 0,
-  }).format(v);
-}
-
-function shortAddr(a: string): string {
-  if (!a || a === 'unknown') return '—';
-  return `${a.slice(0, 5)}…${a.slice(-4)}`;
-}
-
-function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleString('en-US', {
-    month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-    hour12: false,
+async function fetchAnalysis(wallet: string, maxPages: number): Promise<Analysis> {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ wallet, maxPages }),
   });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error || 'Analysis failed');
+  return json as Analysis;
 }
 
-function downloadCSV(transfers: Transfer[], wallet: string) {
-  const header = 'Date,Type,Amount KINS,Counterparty,Signature,Solscan';
-  const rows = transfers.map((t) =>
-    [
-      `"${t.date}"`,
-      t.direction === 'in' ? 'Sell/In' : 'Buy/Out',
-      t.amount,
-      `"${t.counterparty}"`,
-      t.signature,
-      t.solscan,
-    ].join(',')
-  );
-  const blob = new Blob([[header, ...rows].join('\n')], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `kintara-pl-${wallet.slice(0, 8)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+async function fetchKinsPrice(): Promise<KinsPrice | null> {
+  try {
+    const res = await fetch('/api/kins-price');
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.error ? null : (json as KinsPrice);
+  } catch { return null; }
 }
 
-function downloadJSON(data: Analysis) {
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `kintara-report-${data.wallet.slice(0, 8)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+async function fetchHistoricalPrices(
+  dates: string[]
+): Promise<{ priceMap: Record<string, number | null>; ohlcv: OhlcvCandle[] }> {
+  try {
+    const res = await fetch('/api/historical-prices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dates }),
+    });
+    if (!res.ok) return { priceMap: {}, ohlcv: [] };
+    const json = await res.json();
+    return json;
+  } catch { return { priceMap: {}, ohlcv: [] }; }
 }
 
-function buildReport(data: Analysis): string {
-  const s = data.summary;
-  return [
-    `Kintara P/L Report`,
-    `Wallet: ${data.wallet}`,
-    `════════════════════════════════`,
-    `Total Buy (Spent):    ${fmt(s.totalBuyKins, 4)} KINS  (${s.buyCount} tx)`,
-    `Total Sell (Received):${fmt(s.totalSellKins, 4)} KINS  (${s.sellCount} tx)`,
-    `Net P/L:              ${s.netKins >= 0 ? '+' : ''}${fmt(s.netKins, 4)} KINS`,
-    `KINS Transfers:       ${s.kinsTransfers}`,
-    `════════════════════════════════`,
-    `Generated by Kintara P/L Tracker`,
-  ].join('\n');
-}
-
-/* ─── MetricCard ────────────────────────────────────────────────────────────── */
-
-function MetricCard({
-  label, value, sub, color = '',
-}: {
-  label: string; value: string; sub?: string; color?: string;
-}) {
-  return (
-    <div className={`metric-card ${color}`}>
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      {sub && <div className="metric-sub">{sub}</div>}
-    </div>
-  );
-}
-
-function SkeletonMetricCard() {
-  return (
-    <div className="metric-card">
-      <div className="skel skel-sm" style={{ width: '55%' }} />
-      <div className="skel skel-lg" style={{ marginTop: 10, width: '80%' }} />
-      <div className="skel skel-sm" style={{ marginTop: 8, width: '45%' }} />
-    </div>
-  );
-}
-
-/* ─── Tooltip styling ────────────────────────────────────────────────────────── */
-
-const tooltipStyle = {
-  contentStyle: {
-    background: '#0c1626',
-    border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 10,
-    fontSize: 12,
-    color: '#eef2ff',
-    boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
-  },
-  labelStyle: { color: '#7b91b5', marginBottom: 4 },
-  itemStyle: { color: '#eef2ff' },
-  cursor: { fill: 'rgba(255,255,255,0.03)' },
-};
-
-/* ─── BuyVsSellChart ─────────────────────────────────────────────────────────── */
-
-function BuyVsSellChart({ buyTotal, sellTotal }: { buyTotal: number; sellTotal: number }) {
-  const data = [
-    { name: 'Buy / Spent', value: buyTotal },
-    { name: 'Sell / Received', value: sellTotal },
-  ];
-  return (
-    <div className="chart-box">
-      <div className="chart-label">Buy vs Sell Summary</div>
-      <ResponsiveContainer width="100%" height={160}>
-        <BarChart data={data} layout="vertical" margin={{ left: 16, right: 16, top: 0, bottom: 0 }}>
-          <XAxis type="number" hide />
-          <YAxis
-            type="category"
-            dataKey="name"
-            width={110}
-            tick={{ fill: '#7b91b5', fontSize: 11 }}
-            axisLine={false}
-            tickLine={false}
-          />
-          <Tooltip
-            {...tooltipStyle}
-            formatter={(v: unknown) => [`${fmt(Number(v), 2)} KINS`, 'Amount']}
-          />
-          <Bar
-            dataKey="value"
-            radius={[0, 6, 6, 0]}
-            background={{ fill: 'rgba(255,255,255,0.025)' }}
-          >
-            <Cell fill="#f43f5e" />
-            <Cell fill="#10b981" />
-          </Bar>
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-/* ─── DailyActivityChart ─────────────────────────────────────────────────────── */
-
-function DailyActivityChart({ transfers }: { transfers: Transfer[] }) {
-  const data = useMemo(() => {
-    const map: Record<string, { date: string; buy: number; sell: number }> = {};
-    for (const t of transfers) {
-      const d = t.date.slice(0, 10);
-      if (!map[d]) map[d] = { date: d, buy: 0, sell: 0 };
-      if (t.direction === 'out') map[d].buy += t.amount;
-      else map[d].sell += t.amount;
-    }
-    return Object.values(map).sort((a, b) => a.date.localeCompare(b.date)).slice(-30);
-  }, [transfers]);
-
-  if (data.length === 0) {
-    return (
-      <div className="chart-box" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ color: 'var(--t3)', fontSize: 12 }}>No daily data available</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="chart-box">
-      <div className="chart-label">Daily KINS Activity (last 30 days)</div>
-      <ResponsiveContainer width="100%" height={170}>
-        <BarChart data={data} margin={{ left: 0, right: 8, top: 4, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-          <XAxis
-            dataKey="date"
-            tick={{ fill: '#364e6e', fontSize: 10 }}
-            axisLine={false}
-            tickLine={false}
-            interval="preserveStartEnd"
-          />
-          <YAxis hide />
-          <Tooltip
-            {...tooltipStyle}
-            formatter={(v: unknown, name: unknown) => [
-              `${fmt(Number(v), 2)} KINS`,
-              name === 'buy' ? 'Buy / Spent' : 'Sell / Received',
-            ]}
-          />
-          <Legend
-            iconType="circle"
-            iconSize={7}
-            wrapperStyle={{ fontSize: 11, color: '#7b91b5', paddingTop: 8 }}
-            formatter={(v: string) => (v === 'buy' ? 'Buy / Out' : 'Sell / In')}
-          />
-          <Bar dataKey="buy"  fill="#f43f5e" radius={[3,3,0,0]} opacity={0.85} maxBarSize={28} />
-          <Bar dataKey="sell" fill="#10b981" radius={[3,3,0,0]} opacity={0.85} maxBarSize={28} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-/* ─── TransactionTable ───────────────────────────────────────────────────────── */
-
-function TransactionTable({ transfers }: { transfers: Transfer[] }) {
-  const [filter, setFilter] = useState<TradeFilter>('all');
-  const [sort, setSort] = useState<SortMode>('newest');
-  const [search, setSearch] = useState('');
-  const [minAmt, setMinAmt] = useState('');
-
-  const rows = useMemo(() => {
-    let list = [...transfers];
-    if (filter === 'buy')  list = list.filter((t) => t.direction === 'out');
-    if (filter === 'sell') list = list.filter((t) => t.direction === 'in');
-    if (search) {
-      const q = search.toLowerCase();
-      list = list.filter((t) =>
-        t.counterparty.toLowerCase().includes(q) ||
-        t.signature.toLowerCase().includes(q)
-      );
-    }
-    if (minAmt) list = list.filter((t) => t.amount >= Number(minAmt));
-    if (sort === 'newest')  list.sort((a, b) => b.date.localeCompare(a.date));
-    if (sort === 'oldest')  list.sort((a, b) => a.date.localeCompare(b.date));
-    if (sort === 'biggest') list.sort((a, b) => b.amount - a.amount);
-    return list;
-  }, [transfers, filter, sort, search, minAmt]);
-
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="panel-title">Transaction History</span>
-        <div className="panel-head-right">
-          <span className="badge badge--dim">{rows.length} tx</span>
-        </div>
-      </div>
-
-      <div className="filter-bar">
-        <div className="filter-pills">
-          {(['all', 'buy', 'sell'] as TradeFilter[]).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={`fpill ${filter === f ? `act-${f}` : ''}`}
-            >
-              {f === 'all' ? 'All' : f === 'buy' ? '↑ Buys' : '↓ Sells'}
-            </button>
-          ))}
-        </div>
-        <div className="filter-inputs">
-          <input
-            className="f-input"
-            placeholder="Search counterparty / signature…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <input
-            className="f-input f-input-sm"
-            type="number"
-            placeholder="Min KINS"
-            value={minAmt}
-            onChange={(e) => setMinAmt(e.target.value)}
-          />
-          <select
-            className="f-select"
-            value={sort}
-            onChange={(e) => setSort(e.target.value as SortMode)}
-          >
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="biggest">Biggest amount</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Type</th>
-              <th>Amount (KINS)</th>
-              <th>Counterparty</th>
-              <th>Signature</th>
-              <th>Link</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="tbl-empty">No transactions match your filters</td>
-              </tr>
-            ) : (
-              rows.map((t) => (
-                <tr key={t.signature + t.date}>
-                  <td className="td-date">{fmtDate(t.date)}</td>
-                  <td>
-                    <span className={`type-pill ${t.direction === 'in' ? 'type-pill-in' : 'type-pill-out'}`}>
-                      {t.direction === 'in' ? '↓ Sell / In' : '↑ Buy / Out'}
-                    </span>
-                  </td>
-                  <td className={`td-amt ${t.direction === 'in' ? 'td-green' : 'td-red'}`}>
-                    {t.direction === 'in' ? '+' : '−'}{fmt(t.amount, 4)}
-                  </td>
-                  <td className="td-mono" title={t.counterparty}>{shortAddr(t.counterparty)}</td>
-                  <td className="td-mono" title={t.signature}>{t.signature.slice(0, 14)}…</td>
-                  <td>
-                    <a href={t.solscan} target="_blank" rel="noreferrer" className="solscan-btn" title="View on Solscan">
-                      ↗
-                    </a>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ─── CounterpartyTable ──────────────────────────────────────────────────────── */
-
-function CounterpartyTable({ counterparties }: { counterparties: Counterparty[] }) {
-  const [copied, setCopied] = useState('');
-  const copy = (addr: string) => {
-    navigator.clipboard.writeText(addr);
-    setCopied(addr);
-    setTimeout(() => setCopied(''), 1800);
-  };
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="panel-title">Top Counterparties</span>
-        <div className="panel-head-right">
-          <span className="badge badge--dim">{Math.min(counterparties.length, 20)}</span>
-        </div>
-      </div>
-      <div className="tbl-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>Address</th>
-              <th>Received In</th>
-              <th>Spent Out</th>
-              <th>Net</th>
-              <th>Txs</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {counterparties.slice(0, 20).map((c) => (
-              <tr key={c.address}>
-                <td className="td-mono" title={c.address}>{shortAddr(c.address)}</td>
-                <td className="td-amt td-green">+{fmt(c.in, 2)}</td>
-                <td className="td-amt td-red">−{fmt(c.out, 2)}</td>
-                <td className={`td-amt ${c.net >= 0 ? 'td-green' : 'td-red'}`}>
-                  {c.net >= 0 ? '+' : ''}{fmt(c.net, 2)}
-                </td>
-                <td style={{ color: 'var(--t2)' }}>{c.count}</td>
-                <td>
-                  <div style={{ display: 'flex', gap: 5 }}>
-                    <button
-                      className="icon-btn"
-                      onClick={() => copy(c.address)}
-                      title={copied === c.address ? 'Copied!' : 'Copy address'}
-                    >
-                      {copied === c.address ? '✓' : '⎘'}
-                    </button>
-                    <a
-                      href={`https://solscan.io/account/${c.address}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="solscan-btn"
-                      title="View on Solscan"
-                    >
-                      ↗
-                    </a>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-/* ─── ItemAnalytics ──────────────────────────────────────────────────────────── */
-
-function ItemAnalytics() {
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="panel-title">Item Analytics</span>
-        <span className="badge badge--blue">Beta</span>
-      </div>
-      <div className="info-block">
-        <div className="info-ico">⚗️</div>
-        <div>
-          <div className="info-title">Item metadata not available from wallet transfer data alone</div>
-          <p className="info-body">
-            Kintara item names (Coal, Wood, Gold, etc.) require on-chain item metadata or Kintara marketplace
-            event data. Raw wallet KINS transfer scans show token movements without item context. This section
-            will populate automatically when item metadata becomes available via the API.
-          </p>
-          <ul className="info-ul">
-            <li>Item name and resource type</li>
-            <li>Quantity bought vs sold</li>
-            <li>Average buy price / average sell price</li>
-            <li>Realized P/L per item</li>
-            <li>Remaining inventory estimate</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── SettingsPanel ──────────────────────────────────────────────────────────── */
-
-function SettingsPanel({
-  maxPages, setMaxPages, kinsMint, filtered,
-}: {
-  maxPages: number;
-  setMaxPages: (n: number) => void;
-  kinsMint?: string;
-  filtered?: boolean;
-}) {
-  return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="panel-title">Settings</span>
-      </div>
-      <div className="settings-rows">
-        <div className="s-row">
-          <div className="s-label">Pages to Scan</div>
-          <div className="s-desc">Each page fetches up to 100 parsed transactions via Helius. Max 50 pages.</div>
-          <input
-            className="s-input"
-            type="number"
-            min={1}
-            max={50}
-            value={maxPages}
-            onChange={(e) => setMaxPages(Math.min(50, Math.max(1, Number(e.target.value))))}
-          />
-        </div>
-        <div className="s-row">
-          <div className="s-label">KINS Mint Address</div>
-          <div className="s-desc">The SPL token mint address used to identify KINS transfers on Solana.</div>
-          <div className="s-mono">{kinsMint || 'Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump'}</div>
-        </div>
-        <div className="s-row">
-          <div className="s-label">Marketplace Counterparty Filter</div>
-          <div className="s-desc">
-            {filtered
-              ? '✅ Active — only KINS transfers with known marketplace/escrow counterparties are counted.'
-              : '⚪ Inactive — all KINS transfers for this wallet are counted. Set KINTARA_MARKETPLACE_COUNTERPARTIES in .env.local for marketplace-only P/L.'}
-          </div>
-        </div>
-        <div className="s-row">
-          <div className="s-label">API & Security</div>
-          <div className="s-desc">
-            🔒 Your Helius API key is stored in <code>.env.local</code> and used exclusively in the
-            Next.js server-side API route. It is never included in browser bundles or exposed to clients.
-            Only public Solana wallet addresses are required — no seed phrase or private key.
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Main Page ──────────────────────────────────────────────────────────────── */
+/* ─── Main Page ─────────────────────────────────────────────────────────── */
 
 export default function Home() {
+  /* UI state */
   const [tab, setTab]         = useState<Tab>('overview');
   const [wallet, setWallet]   = useState('');
   const [maxPages, setMaxPages] = useState(10);
-  const [data, setData]       = useState<Analysis | null>(null);
-  const [error, setError]     = useState('');
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied]   = useState(false);
+  const [error,   setError]   = useState('');
 
-  async function analyze() {
-    if (!wallet.trim()) return;
+  /* Price state */
+  const [kinsPrice,    setKinsPrice]    = useState<KinsPrice | null>(null);
+  const [priceLoading, setPriceLoading] = useState(true);
+
+  /* Analysis state */
+  const [analysis,  setAnalysis]  = useState<Analysis | null>(null);
+  const [enriched,  setEnriched]  = useState<EnrichedTransfer[]>([]);
+  const [pnl,       setPnl]       = useState<PnlSummary | null>(null);
+  const [ohlcv,     setOhlcv]     = useState<OhlcvCandle[]>([]);
+
+  /* Fetch price on mount */
+  useEffect(() => {
+    fetchKinsPrice().then((p) => { setKinsPrice(p); setPriceLoading(false); });
+  }, []);
+
+  /* ── Analyze ── */
+  const analyze = useCallback(async (w = wallet) => {
+    const trimmed = w.trim();
+    if (!trimmed) return;
     setLoading(true);
     setError('');
-    setData(null);
+    setAnalysis(null);
+    setEnriched([]);
+    setPnl(null);
+    setOhlcv([]);
     setTab('overview');
+
     try {
-      const res = await fetch('/api/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wallet: wallet.trim(), maxPages }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || 'Request failed');
-      setData(json);
+      /* 1. Fetch analysis + current price in parallel */
+      const [rawAnalysis, freshPrice] = await Promise.all([
+        fetchAnalysis(trimmed, maxPages),
+        fetchKinsPrice(),
+      ]);
+      if (freshPrice) setKinsPrice(freshPrice);
+
+      /* 2. Extract unique transaction dates */
+      const uniqueDates = [...new Set(rawAnalysis.transfers.map((t) => t.date.slice(0, 10)))];
+
+      /* 3. Fetch historical prices (+ price chart OHLCV) */
+      const { priceMap, ohlcv: candleData } = await fetchHistoricalPrices(uniqueDates);
+      setOhlcv(candleData);
+
+      /* 4. Enrich transfers with USD values */
+      const enrichedTx = enrichTransfers(
+        rawAnalysis.transfers, priceMap, freshPrice?.priceUsd ?? null
+      );
+
+      /* 5. Calculate P/L */
+      const pnlResult = calculatePnl(enrichedTx, freshPrice?.priceUsd ?? null);
+
+      setAnalysis(rawAnalysis);
+      setEnriched(enrichedTx);
+      setPnl(pnlResult);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setLoading(false);
     }
+  }, [wallet, maxPages]);
+
+  /* ── Export handlers ── */
+  function handleExport() {
+    if (!analysis || !pnl) return;
+    exportSummaryJson(analysis, pnl, kinsPrice);
+  }
+
+  function handleCopyReport() {
+    if (!analysis || !pnl) return;
+    const text = buildReportText(analysis, pnl, kinsPrice);
+    navigator.clipboard.writeText(text);
   }
 
   function reset() {
-    setData(null);
-    setError('');
-    setWallet('');
-    setTab('overview');
+    setAnalysis(null); setEnriched([]); setPnl(null); setOhlcv([]);
+    setError(''); setTab('overview');
   }
 
-  function handleCopy() {
-    if (!data) return;
-    navigator.clipboard.writeText(buildReport(data));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
+  const s = analysis?.summary;
 
-  const s = data?.summary;
-  const netColor = s
-    ? s.netKins > 0 ? 'c-green'
-    : s.netKins < 0 ? 'c-red'
-    : ''
-    : '';
-
-  const TABS: Tab[] = ['overview', 'trades', 'counterparties', 'items', 'settings'];
+  /* ── Derived metrics ── */
+  const bestTrade  = enriched.length > 0
+    ? enriched.reduce((b, t) => (t.txUsdValue ?? 0) > (b.txUsdValue ?? 0) ? t : b, enriched[0])
+    : null;
+  const worstTrade = enriched.filter((t) => t.direction === 'out').length > 0
+    ? enriched.filter((t) => t.direction === 'out')
+        .reduce((w, t) => (t.txUsdValue ?? 0) > (w.txUsdValue ?? 0) ? t : w,
+          enriched.filter((t) => t.direction === 'out')[0])
+    : null;
+  const lastTx = enriched.length > 0
+    ? enriched.reduce((l, t) => t.timestamp > l.timestamp ? t : l, enriched[0])
+    : null;
 
   return (
     <div className="app">
-
-      {/* ── TOP NAV ── */}
-      <nav className="topnav">
-        <div className="nav-left">
-          <div className="nav-logo">
-            <div className="nav-logo-icon">◈</div>
-            <span className="nav-logo-text">
-              Kintara <span className="nav-logo-accent">P/L</span>
-            </span>
-          </div>
-          <div className="nav-pill-group">
-            <span className="badge badge--blue"><span className="badge-dot" />Mainnet</span>
-            <span className="badge badge--green">Public wallet only</span>
-          </div>
-        </div>
-
-        <div className="nav-right">
-          {data && (
-            <div className="nav-tabs">
-              {TABS.map((t) => (
-                <button
-                  key={t}
-                  className={`nav-tab ${tab === t ? 'active' : ''}`}
-                  onClick={() => setTab(t)}
-                >
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </nav>
+      {/* ─── Header ─── */}
+      <Header
+        kinsPrice={kinsPrice}
+        priceLoading={priceLoading}
+        wallet={wallet}
+        analysisLoaded={!!analysis}
+        tab={tab}
+        setTab={setTab}
+        onRefresh={() => analysis && analyze()}
+        onExport={handleExport}
+        onSettings={() => setTab('settings')}
+      />
 
       <main className="main">
+        {/* ─── Wallet Input ─── */}
+        <div className="wallet-card">
+          <div className="wc-text">
+            <div className="wc-eyebrow">Kintara Analytics</div>
+            <h1 className="wc-title">
+              KINS Wallet<br/>
+              <span className="wc-accent">P/L Ledger</span>
+            </h1>
+            <p className="wc-desc">
+              Scan any Solana wallet for $KINS trading history — buys, sells, net P/L,
+              historical USD values, and counterparty breakdown. No seed phrase required.
+            </p>
+          </div>
 
-        {/* ── HERO / INPUT ── */}
-        <div className="hero-card">
-          <div className="hero-layout">
-            <div className="hero-text">
-              <div className="hero-eyebrow">Kintara Analytics</div>
-              <h1 className="hero-title">
-                KINS Buy/Sell<br />
-                <span className="hero-accent">P/L Tracker</span>
-              </h1>
-              <p className="hero-desc">
-                Scan any Solana wallet and get a complete breakdown of your $KINS token
-                activity — buys, sells, net P/L, counterparties and full history.
-                No seed phrase required.
-              </p>
-            </div>
-
-            <div className="wallet-form">
+          <div className="wc-form">
+            <div className="input-row">
               <div className="input-wrap">
-                <span className="input-icon">◎</span>
+                <span className="input-ico">◎</span>
                 <input
-                  id="wallet-address-input"
+                  id="wallet-input"
                   className="wallet-input"
                   value={wallet}
                   onChange={(e) => setWallet(e.target.value)}
                   placeholder="Paste Solana wallet address…"
-                  onKeyDown={(e) => e.key === 'Enter' && !loading && wallet.trim() && analyze()}
+                  onKeyDown={(e) => e.key === 'Enter' && !loading && analyze()}
                   spellCheck={false}
                   autoComplete="off"
                 />
               </div>
+              <input
+                className="pages-input"
+                type="number" min={1} max={50}
+                value={maxPages}
+                onChange={(e) => setMaxPages(Math.min(50, Math.max(1, Number(e.target.value))))}
+                title="Pages to scan (max 50)"
+              />
+            </div>
 
-              <div className="form-actions">
-                <button
-                  id="analyze-btn"
-                  className="btn btn-primary"
-                  onClick={analyze}
-                  disabled={loading || !wallet.trim()}
-                >
-                  {loading ? <><span className="spinner" />Scanning…</> : '⚡ Analyze Wallet'}
-                </button>
+            <div className="btn-row">
+              <button
+                id="analyze-btn"
+                className="btn btn-primary"
+                onClick={() => analyze()}
+                disabled={loading || !wallet.trim()}
+              >
+                {loading
+                  ? <><span className="spinner" />Scanning…</>
+                  : '⚡ Analyze Wallet'
+                }
+              </button>
 
-                {data && (
+              {analysis && (
+                <>
+                  <button className="btn btn-ghost btn-sm"
+                    onClick={() => exportTradesCsv(enriched, wallet)}>⬇ CSV</button>
+                  <button className="btn btn-ghost btn-sm" onClick={handleExport}>⬇ JSON</button>
+                  <button className="btn btn-ghost btn-sm" onClick={handleCopyReport}>⎘ Copy</button>
+                  <button className="btn btn-danger btn-sm" onClick={reset}>✕ Reset</button>
+                </>
+              )}
+            </div>
+
+            {analysis && (
+              <div className="wc-meta">
+                <span className="wc-dot" />
+                <span>{s!.totalTransfersChecked} txs scanned</span>
+                <span className="wc-sep">·</span>
+                <span>{s!.kinsTransfers} KINS transfers</span>
+                <span className="wc-sep">·</span>
+                <span>
+                  {pnl?.hasHistoricalPrices
+                    ? '📊 Historical USD prices'
+                    : pnl?.totalBuyUsd != null
+                      ? '⚡ Current price (historical unavailable)'
+                      : '⚠ Price unavailable'}
+                </span>
+                {analysis.filteredByMarketplaceCounterparties && (
                   <>
-                    <button className="btn btn-ghost" onClick={() => downloadCSV(data.transfers, data.wallet)}>
-                      ⬇ CSV
-                    </button>
-                    <button className="btn btn-ghost" onClick={() => downloadJSON(data)}>
-                      ⬇ JSON
-                    </button>
-                    <button className="btn btn-ghost" onClick={handleCopy}>
-                      {copied ? '✓ Copied!' : '⎘ Copy Report'}
-                    </button>
-                    <button className="btn btn-danger" onClick={reset}>✕ Reset</button>
+                    <span className="wc-sep">·</span>
+                    <span>Marketplace filter active</span>
                   </>
                 )}
               </div>
-
-              {data && (
-                <div className="form-status">
-                  <span className="status-dot" />
-                  <span>
-                    {data.filteredByMarketplaceCounterparties
-                      ? 'Filtered by marketplace counterparties'
-                      : 'All KINS transfers shown — no counterparty filter set'}
-                  </span>
-                  <span className="status-sep">·</span>
-                  <span>
-                    KINS mint:&nbsp;
-                    <code>{data.kinsMint.slice(0, 8)}…{data.kinsMint.slice(-4)}</code>
-                  </span>
-                  <span className="status-sep">·</span>
-                  <span>{s!.totalTransfersChecked} txs scanned</span>
-                </div>
-              )}
-            </div>
+            )}
           </div>
         </div>
 
-        {/* ── ERROR ── */}
+        {/* ─── Error ─── */}
         {error && (
           <div className="error-box">
-            <div className="error-icon-wrap">✕</div>
+            <span className="err-ico">⚠</span>
             <div>
-              <div className="error-title">Analysis Failed</div>
-              <div className="error-body">{error}</div>
+              <div className="err-title">Analysis Failed</div>
+              <div className="err-body">{error}</div>
             </div>
           </div>
         )}
 
-        {/* ── LOADING SKELETONS ── */}
+        {/* ─── Loading metric skeletons ─── */}
         {loading && (
-          <div>
-            <div className="metrics-grid">
-              {Array.from({ length: 8 }).map((_, i) => <SkeletonMetricCard key={i} />)}
-            </div>
+          <div className="metrics-grid">
+            {Array.from({ length: 12 }).map((_, i) => (
+              <MetricCard key={i} label="" value="" loading />
+            ))}
           </div>
         )}
 
-        {/* ── RESULTS ── */}
-        {data && !loading && (
+        {/* ─── Tab content ─── */}
+        {analysis && pnl && !loading && (
           <>
-            {/* Mobile tab strip */}
-            <div className="mobile-tabs">
-              {TABS.map((t) => (
-                <button
-                  key={t}
-                  className={`mobile-tab ${tab === t ? 'active' : ''}`}
-                  onClick={() => setTab(t)}
-                >
-                  {t.charAt(0).toUpperCase() + t.slice(1)}
-                </button>
-              ))}
-            </div>
-
-            {/* ── OVERVIEW ── */}
+            {/* ══ OVERVIEW ══ */}
             {tab === 'overview' && (
               <>
+                {/* Primary metrics */}
                 <div className="metrics-grid">
-                  <MetricCard
-                    label="Total Buy / Spent"
-                    value={`${fmt(s!.totalBuyKins, 2)} KINS`}
+                  <MetricCard label="KINS Price"
+                    value={kinsPrice ? fmtKinsPrice(kinsPrice.priceUsd) : '—'}
+                    sub={kinsPrice ? `${fmtPct(kinsPrice.priceChange24h)} 24h · via DexScreener` : 'Unavailable'}
+                    color="blue" />
+                  <MetricCard label="Total Buy / Spent"
+                    value={fmtKins(pnl.totalBuyKins, 2) + ' KINS'}
+                    usd={fmtUsd(pnl.totalBuyUsd)}
                     sub={`${s!.buyCount} outgoing transfers`}
-                    color="c-red"
-                  />
-                  <MetricCard
-                    label="Total Sell / Received"
-                    value={`${fmt(s!.totalSellKins, 2)} KINS`}
+                    color="red" />
+                  <MetricCard label="Total Sell / Received"
+                    value={fmtKins(pnl.totalSellKins, 2) + ' KINS'}
+                    usd={fmtUsd(pnl.totalSellUsd)}
                     sub={`${s!.sellCount} incoming transfers`}
-                    color="c-green"
-                  />
-                  <MetricCard
-                    label="Net P/L"
-                    value={`${s!.netKins >= 0 ? '+' : ''}${fmt(s!.netKins, 4)} KINS`}
+                    color="green" />
+                  <MetricCard label="Realized P/L"
+                    value={fmtUsd(pnl.realizedProfitUsd)}
+                    sub={`ROI: ${fmtPct(pnl.roiPercent)}`}
+                    color={pnl.realizedProfitUsd == null ? 'default' : pnl.realizedProfitUsd >= 0 ? 'green' : 'red'} />
+                  <MetricCard label="Net KINS"
+                    value={`${pnl.netKins >= 0 ? '+' : ''}${fmtKins(pnl.netKins, 4)}`}
+                    usd={fmtUsd(pnl.currentHoldingUsd)}
                     sub="Received minus spent"
-                    color={netColor}
-                  />
-                  <MetricCard
-                    label="Status"
-                    value={s!.netKins > 0 ? '▲ Profit' : s!.netKins < 0 ? '▼ Loss' : '— Neutral'}
-                    sub={`${fmt(Math.abs(s!.netKins), 2)} KINS ${s!.netKins >= 0 ? 'ahead' : 'behind'}`}
-                    color={netColor}
-                  />
-                  <MetricCard
-                    label="Buy Count"
+                    color={pnl.netKins >= 0 ? 'green' : 'red'} />
+                  <MetricCard label="ROI %"
+                    value={fmtPct(pnl.roiPercent)}
+                    sub="Realized return on investment"
+                    color={pnl.roiPercent == null ? 'default' : pnl.roiPercent >= 0 ? 'green' : 'red'} />
+                  <MetricCard label="Buy Count"
                     value={String(s!.buyCount)}
                     sub="Outgoing KINS transfers"
-                    color="c-orange"
-                  />
-                  <MetricCard
-                    label="Sell Count"
+                    color="amber" />
+                  <MetricCard label="Sell Count"
                     value={String(s!.sellCount)}
                     sub="Incoming KINS transfers"
-                    color="c-blue"
-                  />
-                  <MetricCard
-                    label="KINS Transfers"
-                    value={String(s!.kinsTransfers)}
-                    sub="Matched KINS movements"
-                  />
-                  <MetricCard
-                    label="Total Checked"
-                    value={String(s!.totalTransfersChecked)}
-                    sub="All token transfers scanned"
-                  />
+                    color="purple" />
+                  <MetricCard label="Active Orders"
+                    value="—"
+                    sub="Marketplace API not configured"
+                    color="default" />
+                  <MetricCard label="Best Trade"
+                    value={bestTrade ? fmtUsd(bestTrade.txUsdValue) : '—'}
+                    sub={bestTrade ? fmtDateShort(bestTrade.date) : 'No data'}
+                    color="green" />
+                  <MetricCard label="Biggest Buy"
+                    value={worstTrade ? fmtKins(worstTrade.amount, 2) + ' K' : '—'}
+                    usd={worstTrade ? fmtUsd(worstTrade.txUsdValue) : undefined}
+                    color="red" />
+                  <MetricCard label="Last Activity"
+                    value={lastTx ? fmtDateShort(lastTx.date) : '—'}
+                    sub={lastTx ? (lastTx.direction === 'in' ? '↓ Sell/In' : '↑ Buy/Out') : ''}
+                    color="blue" />
                 </div>
 
-                {s!.kinsTransfers === 0 ? (
-                  <div className="panel" style={{ marginBottom: 14 }}>
-                    <div className="info-block">
-                      <div className="info-ico">🔍</div>
-                      <div>
-                        <div className="info-title">No KINS transfers found</div>
-                        <p className="info-body">
-                          This wallet has no $KINS token transfers in the scanned range.
-                          Try increasing the number of pages to scan in Settings, or verify the wallet address is correct.
-                        </p>
-                      </div>
+                {/* Charts */}
+                {s!.kinsTransfers > 0 && (
+                  <div className="charts-row">
+                    <div className="chart-box">
+                      <div className="chart-label">Buy vs Sell Total</div>
+                      <BuySellSummaryChart pnl={pnl} />
+                    </div>
+                    <div className="chart-box">
+                      <div className="chart-label">Daily Activity (last 45 days)</div>
+                      <DailyChart transfers={enriched} />
                     </div>
                   </div>
-                ) : (
-                  <div className="charts-row">
-                    <BuyVsSellChart buyTotal={s!.totalBuyKins} sellTotal={s!.totalSellKins} />
-                    <DailyActivityChart transfers={data.transfers} />
+                )}
+
+                {/* Cumulative P/L chart */}
+                {enriched.some((t) => t.txUsdValue != null) && (
+                  <div className="panel" style={{ marginBottom: 12 }}>
+                    <div className="panel-head">
+                      <span className="panel-title">Cumulative P/L</span>
+                      <span className="badge-sm badge-blue">USD</span>
+                    </div>
+                    <div style={{ padding: '4px 14px 14px' }}>
+                      <CumulativePnlChart transfers={enriched} />
+                    </div>
+                  </div>
+                )}
+
+                {s!.kinsTransfers === 0 && (
+                  <div className="panel">
+                    <EmptyState
+                      icon="🔍"
+                      title="No KINS transfers found"
+                      body="This wallet has no $KINS token transfers in the scanned range. Try increasing pages to scan or verify the wallet address."
+                      note={`KINS Mint: Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump`}
+                    />
                   </div>
                 )}
               </>
             )}
 
-            {/* ── TRADES ── */}
-            {tab === 'trades' && <TransactionTable transfers={data.transfers} />}
+            {/* ══ TRADES ══ */}
+            {tab === 'trades' && (
+              <TradeTable transfers={enriched} wallet={wallet} />
+            )}
 
-            {/* ── COUNTERPARTIES ── */}
+            {/* ══ ACTIVE ORDERS ══ */}
+            {tab === 'orders' && <ActiveOrdersTab wallet={wallet} />}
+
+            {/* ══ RESOURCES ══ */}
+            {tab === 'resources' && <ResourceTable />}
+
+            {/* ══ COUNTERPARTIES ══ */}
             {tab === 'counterparties' && (
-              data.counterparties.length === 0 ? (
+              analysis.counterparties.length === 0 ? (
                 <div className="panel">
-                  <div className="info-block">
-                    <div className="info-ico">🔍</div>
-                    <div>
-                      <div className="info-title">No counterparty data</div>
-                      <p className="info-body">No KINS transfers found for this wallet.</p>
-                    </div>
-                  </div>
+                  <EmptyState icon="🔍" title="No counterparties found" body="No KINS transfers with counterparty data." />
                 </div>
               ) : (
-                <CounterpartyTable counterparties={data.counterparties} />
+                <CounterpartyTable
+                  counterparties={analysis.counterparties}
+                  currentPrice={kinsPrice?.priceUsd ?? null}
+                />
               )
             )}
 
-            {/* ── ITEMS ── */}
-            {tab === 'items' && <ItemAnalytics />}
+            {/* ══ PRICE ══ */}
+            {tab === 'price' && (
+              <PriceTab kinsPrice={kinsPrice} ohlcv={ohlcv} priceLoading={priceLoading} />
+            )}
 
-            {/* ── SETTINGS ── */}
+            {/* ══ SETTINGS ══ */}
             {tab === 'settings' && (
               <SettingsPanel
                 maxPages={maxPages}
                 setMaxPages={setMaxPages}
-                kinsMint={data.kinsMint}
-                filtered={data.filteredByMarketplaceCounterparties}
+                kinsMint={analysis.kinsMint}
+                filtered={analysis.filteredByMarketplaceCounterparties}
+                kinsPrice={kinsPrice}
               />
             )}
           </>
         )}
 
-        {/* ── EMPTY STATE ── */}
-        {!data && !loading && !error && (
-          <div className="empty-state">
-            <div className="empty-glyph">◈</div>
-            <div className="empty-title">Paste a wallet address to begin</div>
-            <p className="empty-sub">
-              No seed phrase or private key needed. Read-only on-chain analysis powered by Helius.
+        {/* ─── Price/Settings when no analysis loaded ─── */}
+        {!analysis && !loading && tab === 'price' && (
+          <PriceTab kinsPrice={kinsPrice} ohlcv={ohlcv} priceLoading={priceLoading} />
+        )}
+        {!analysis && !loading && tab === 'settings' && (
+          <SettingsPanel
+            maxPages={maxPages}
+            setMaxPages={setMaxPages}
+            filtered={false}
+            kinsPrice={kinsPrice}
+          />
+        )}
+
+        {/* ─── Empty state (no analysis, not loading, not price/settings) ─── */}
+        {!analysis && !loading && !error && tab === 'overview' && (
+          <div className="overview-empty">
+            <div className="oe-glyph">◈</div>
+            <div className="oe-title">Paste a wallet address to begin</div>
+            <p className="oe-sub">
+              Read-only analysis of KINS token transfers on Solana.
+              No seed phrase or private key required. Powered by Helius + DexScreener.
             </p>
           </div>
         )}
       </main>
 
       <footer className="footer">
-        <span>Kintara P/L Tracker</span>
+        <span>Kintara Ledger</span>
         <span className="footer-sep">·</span>
-        <span>Powered by Helius Enhanced API</span>
+        <span>Helius Enhanced API</span>
+        <span className="footer-sep">·</span>
+        <span>DexScreener + GeckoTerminal prices</span>
         <span className="footer-sep">·</span>
         <span>Read-only · No private keys</span>
       </footer>

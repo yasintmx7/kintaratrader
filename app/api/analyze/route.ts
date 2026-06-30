@@ -1,202 +1,168 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isValidSolanaAddress } from '@/lib/solana';
+import type { Transfer, Counterparty } from '@/types';
+
+/* ─── Types matching Helius parsed transaction shape ────────────────────────── */
 
 type HeliusTokenTransfer = {
   fromUserAccount: string;
   toUserAccount: string;
-  fromTokenAccount?: string;
-  toTokenAccount?: string;
   tokenAmount: number;
   mint: string;
-  tokenStandard?: string;
 };
 
-type HeliusParsedTransaction = {
-  description: string;
-  type: string;
-  source: string;
-  fee: number;
-  feePayer: string;
+type HeliusTx = {
   signature: string;
-  slot: number;
   timestamp: number;
   tokenTransfers: HeliusTokenTransfer[];
-  transactionError?: any;
+  transactionError?: unknown;
 };
+
+/* ─── Config ────────────────────────────────────────────────────────────────── */
 
 const KINS_MINT = process.env.KINS_MINT || 'Tqj8yFmagrg7oorpQkVGYR52r96RFTamvWfth9bpump';
 
-function getAllowedCounterparties() {
+function allowedCounterparties(): string[] {
   return (process.env.KINTARA_MARKETPLACE_COUNTERPARTIES || '')
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
+    .split(',').map((x) => x.trim()).filter(Boolean);
 }
 
-async function fetchParsedTransactions(wallet: string, maxPages: number) {
-  const apiKey = process.env.HELIUS_API_KEY;
-  if (!apiKey) {
-    throw new Error('Missing HELIUS_API_KEY in .env.local');
-  }
+/* ─── Helius fetcher ────────────────────────────────────────────────────────── */
 
-  let beforeSignature = '';
+async function fetchParsedTxs(wallet: string, maxPages: number): Promise<HeliusTx[]> {
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey) throw new Error('Missing HELIUS_API_KEY in .env.local');
+
+  let beforeSig = '';
   let page = 0;
-  const allTransactions: HeliusParsedTransaction[] = [];
+  const all: HeliusTx[] = [];
 
   while (page < maxPages) {
     const url = new URL(`https://api.helius.xyz/v0/addresses/${wallet}/transactions`);
     url.searchParams.set('api-key', apiKey);
     url.searchParams.set('limit', '100');
-    if (beforeSignature) {
-      url.searchParams.set('before-signature', beforeSignature);
+    if (beforeSig) url.searchParams.set('before-signature', beforeSig);
+
+    const res = await fetch(url.toString(), { cache: 'no-store' });
+    if (!res.ok) {
+      const detail = await res.text();
+      throw new Error(`Helius ${res.status}: ${detail.slice(0, 200)}`);
     }
 
-    const response = await fetch(url.toString(), { cache: 'no-store' });
-    if (!response.ok) {
-      const detail = await response.text();
-      throw new Error(`Helius error ${response.status}: ${detail}`);
-    }
+    const batch = (await res.json()) as HeliusTx[];
+    if (!batch || batch.length === 0) break;
+    all.push(...batch);
 
-    const data = (await response.json()) as HeliusParsedTransaction[];
-    if (!data || data.length === 0) {
-      break;
-    }
-
-    allTransactions.push(...data);
-
-    // The last transaction's signature is used as the cursor for the next page
-    const lastTx = data[data.length - 1];
-    if (!lastTx || !lastTx.signature) {
-      break;
-    }
-    beforeSignature = lastTx.signature;
-    page += 1;
+    const last = batch[batch.length - 1];
+    if (!last?.signature) break;
+    beforeSig = last.signature;
+    page++;
   }
 
-  return allTransactions;
+  return all;
 }
+
+/* ─── Route handler ─────────────────────────────────────────────────────────── */
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
-    const wallet = String(body.wallet || '').trim();
-    const maxPages = Math.min(Number(body.maxPages || 10), 50);
+    const body      = await req.json();
+    const wallet    = String(body.wallet   || '').trim();
+    const maxPages  = Math.min(Number(body.maxPages || 10), 50);
 
     if (!isValidSolanaAddress(wallet)) {
       return NextResponse.json({ error: 'Invalid Solana wallet address' }, { status: 400 });
     }
 
-    const allowedCounterparties = getAllowedCounterparties();
-    const transactions = await fetchParsedTransactions(wallet, maxPages);
+    const allowed = allowedCounterparties();
+    const txs     = await fetchParsedTxs(wallet, maxPages);
 
-    const kinsTransfers: Array<{
-      date: string;
-      direction: 'in' | 'out';
-      amount: number;
-      counterparty: string;
-      signature: string;
-      solscan: string;
-      timestamp: number;
-    }> = [];
+    const transfers: Transfer[] = [];
+    let totalChecked = 0;
 
-    let totalTransfersChecked = 0;
+    for (const tx of txs) {
+      if (tx.transactionError) continue;
+      for (const t of tx.tokenTransfers ?? []) {
+        if (t.mint !== KINS_MINT) continue;
+        totalChecked++;
 
-    for (const tx of transactions) {
-      if (tx.transactionError) {
-        continue;
-      }
-      const transfers = tx.tokenTransfers || [];
-      for (const t of transfers) {
-        if (t.mint === KINS_MINT) {
-          totalTransfersChecked++;
+        let direction: 'in' | 'out' | null = null;
+        let counterparty = '';
 
-          let direction: 'in' | 'out' | null = null;
-          let counterparty = '';
-
-          if (t.fromUserAccount === wallet) {
-            direction = 'out'; // outgoing/spent -> Buy
-            counterparty = t.toUserAccount;
-          } else if (t.toUserAccount === wallet) {
-            direction = 'in'; // incoming/received -> Sell
-            counterparty = t.fromUserAccount;
-          }
-
-          if (direction) {
-            const isKnownCounterparty =
-              allowedCounterparties.length === 0 ||
-              allowedCounterparties.includes(counterparty);
-
-            if (isKnownCounterparty) {
-              kinsTransfers.push({
-                date: new Date(tx.timestamp * 1000).toISOString(),
-                direction,
-                amount: t.tokenAmount,
-                counterparty,
-                signature: tx.signature,
-                solscan: `https://solscan.io/tx/${tx.signature}`,
-                timestamp: tx.timestamp,
-              });
-            }
-          }
+        if (t.fromUserAccount === wallet) {
+          direction    = 'out';
+          counterparty = t.toUserAccount;
+        } else if (t.toUserAccount === wallet) {
+          direction    = 'in';
+          counterparty = t.fromUserAccount;
         }
+
+        if (!direction) continue;
+        if (allowed.length > 0 && !allowed.includes(counterparty)) continue;
+
+        transfers.push({
+          date:         new Date(tx.timestamp * 1000).toISOString(),
+          direction,
+          amount:       t.tokenAmount,
+          counterparty: counterparty || 'unknown',
+          signature:    tx.signature,
+          solscan:      `https://solscan.io/tx/${tx.signature}`,
+          timestamp:    tx.timestamp,
+        });
       }
     }
 
-    // Sort newest first
-    kinsTransfers.sort((a, b) => b.timestamp - a.timestamp);
+    transfers.sort((a, b) => b.timestamp - a.timestamp);
 
-    const buys = kinsTransfers.filter((t) => t.direction === 'out');
-    const sells = kinsTransfers.filter((t) => t.direction === 'in');
+    /* ── Counterparties ── */
+    const cpAgg: Record<string, {
+      in: number; out: number; count: number; timestamps: number[];
+    }> = {};
 
-    const totalBuyKins = buys.reduce((sum, t) => sum + t.amount, 0);
-    const totalSellKins = sells.reduce((sum, t) => sum + t.amount, 0);
-    const netKins = totalSellKins - totalBuyKins;
-
-    const byCounterparty: Record<string, { in: number; out: number; count: number }> = {};
-    for (const t of kinsTransfers) {
+    for (const t of transfers) {
       const key = t.counterparty || 'unknown';
-      if (!byCounterparty[key]) byCounterparty[key] = { in: 0, out: 0, count: 0 };
-      if (t.direction === 'in') {
-        byCounterparty[key].in += t.amount;
-      } else {
-        byCounterparty[key].out += t.amount;
-      }
-      byCounterparty[key].count += 1;
+      if (!cpAgg[key]) cpAgg[key] = { in: 0, out: 0, count: 0, timestamps: [] };
+      if (t.direction === 'in') cpAgg[key].in  += t.amount;
+      else                       cpAgg[key].out += t.amount;
+      cpAgg[key].count++;
+      cpAgg[key].timestamps.push(t.timestamp);
     }
+
+    const counterparties: Counterparty[] = Object.entries(cpAgg)
+      .map(([address, v]) => ({
+        address,
+        in:        v.in,
+        out:       v.out,
+        count:     v.count,
+        net:       v.in - v.out,
+        firstSeen: new Date(Math.min(...v.timestamps) * 1000).toISOString(),
+        lastSeen:  new Date(Math.max(...v.timestamps) * 1000).toISOString(),
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    const buys  = transfers.filter((t) => t.direction === 'out');
+    const sells = transfers.filter((t) => t.direction === 'in');
+    const totalBuyKins  = buys.reduce((s, t) => s + t.amount, 0);
+    const totalSellKins = sells.reduce((s, t) => s + t.amount, 0);
 
     return NextResponse.json({
       wallet,
       kinsMint: KINS_MINT,
-      filteredByMarketplaceCounterparties: allowedCounterparties.length > 0,
+      filteredByMarketplaceCounterparties: allowed.length > 0,
       summary: {
-        totalTransfersChecked,
-        kinsTransfers: kinsTransfers.length,
-        buyCount: buys.length,
-        sellCount: sells.length,
+        totalTransfersChecked: totalChecked,
+        kinsTransfers:  transfers.length,
+        buyCount:       buys.length,
+        sellCount:      sells.length,
         totalBuyKins,
         totalSellKins,
-        netKins,
+        netKins:        totalSellKins - totalBuyKins,
       },
-      counterparties: Object.entries(byCounterparty)
-        .map(([address, value]) => ({
-          address,
-          ...value,
-          net: value.in - value.out,
-        }))
-        .sort((a, b) => b.count - a.count),
-      transfers: kinsTransfers.map((t) => ({
-        date: t.date,
-        direction: t.direction,
-        amount: t.amount,
-        counterparty: t.counterparty,
-        signature: t.signature,
-        solscan: t.solscan,
-      })),
+      counterparties,
+      transfers,
     });
-  } catch (error: any) {
-    return NextResponse.json(
-      { error: error?.message || 'Something went wrong' },
-      { status: 500 }
-    );
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Something went wrong';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
