@@ -39,15 +39,15 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
 
         {/* API status */}
         <div className="s-row">
-          <div className="s-label">API Status</div>
+          <div className="s-label">Data Source Status</div>
           <div className="s-status-grid">
             <div className="s-status-row">
               <span className="status-dot dot-green" />
-              <span>Helius Enhanced API — configured via .env.local (server-side only)</span>
+              <span>Helius API — configured via .env.local (server-side only)</span>
             </div>
             <div className="s-status-row">
               <span className={`status-dot ${kinsPrice ? 'dot-green' : 'dot-amber'}`} />
-              <span>DexScreener price API — {kinsPrice ? 'connected' : 'not yet fetched'}</span>
+              <span>DexScreener API — {kinsPrice ? 'connected' : 'not fetched'}</span>
             </div>
             <div className="s-status-row">
               <span className="status-dot dot-amber" />
@@ -55,7 +55,15 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
             </div>
             <div className="s-status-row">
               <span className="status-dot dot-red" />
-              <span>Kintara marketplace API — not configured (active orders unavailable)</span>
+              <span>Marketplace API — not found (listings unavailable)</span>
+            </div>
+            <div className="s-status-row">
+              <span className="status-dot dot-red" />
+              <span>Seller Wallet Mapping — not available</span>
+            </div>
+            <div className="s-status-row">
+              <span className="status-dot dot-green" />
+              <span>Kintara Docs/Assets — loaded pixel fallbacks</span>
             </div>
           </div>
         </div>
@@ -75,22 +83,7 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
         <div className="s-row">
           <div className="s-label">Known Limitations</div>
           <div className="s-desc">
-            Wallet transfers can calculate KINS in/out and estimated USD P/L using DexScreener + GeckoTerminal.
-            The following require additional data sources:
-          </div>
-          <div className="req-list" style={{ marginTop: 8 }}>
-            <div className="req-item">
-              <span className="req-dot">▸</span>
-              <span><strong>Exact item names</strong> — require Kintara marketplace metadata API</span>
-            </div>
-            <div className="req-item">
-              <span className="req-dot">▸</span>
-              <span><strong>Active sell orders</strong> — require marketplace API or escrow program scanning</span>
-            </div>
-            <div className="req-item">
-              <span className="req-dot">▸</span>
-              <span><strong>Historical prices before GeckoTerminal coverage</strong> — marked as "current" fallback</span>
-            </div>
+            Exact item names and active sell orders require marketplace metadata, public listing API, seller wallet mapping, or on-chain marketplace escrow/program data. Wallet transfers alone can only calculate KINS in/out.
           </div>
         </div>
 

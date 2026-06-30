@@ -108,6 +108,7 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
             <tr>
               <th>Date</th>
               <th>Type</th>
+              <th>Item</th>
               <th>Amount KINS</th>
               <th>KINS Price</th>
               <th>USD @ Tx</th>
@@ -119,7 +120,7 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
           </thead>
           <tbody>
             {pageRows.length === 0 ? (
-              <tr><td colSpan={9} className="tbl-empty">No transactions match filters</td></tr>
+              <tr><td colSpan={10} className="tbl-empty">No transactions match filters</td></tr>
             ) : (
               pageRows.map((t) => (
                 <tr key={t.signature + t.date}>
@@ -128,6 +129,12 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
                     <span className={`type-pill ${t.direction === 'in' ? 'tp-in' : 'tp-out'}`}>
                       {t.direction === 'in' ? '↓ Sell' : '↑ Buy'}
                     </span>
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ fontSize: '14px' }}>📦</span>
+                      <span className="td-dim">Unknown</span>
+                    </div>
                   </td>
                   <td className={`td-mono ${t.direction === 'in' ? 'td-green' : 'td-red'}`}>
                     {t.direction === 'in' ? '+' : '−'}{fmtKins(t.amount, 4)}

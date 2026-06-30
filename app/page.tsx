@@ -16,6 +16,11 @@ import { PriceTab }          from '@/components/PriceTab';
 import { SettingsPanel }     from '@/components/SettingsPanel';
 import { EmptyState }        from '@/components/EmptyState';
 import { DailyChart, BuySellSummaryChart, CumulativePnlChart } from '@/components/Charts';
+import { AppShell }          from '@/components/AppShell';
+import { MarketplaceGrid }   from '@/components/MarketplaceGrid';
+import { ActiveOrdersTable } from '@/components/ActiveOrdersTable';
+import { LoadingSkeleton }   from '@/components/LoadingSkeleton';
+import type { MarketplaceListing } from '@/lib/marketplace';
 
 /* ─── Data fetching helpers ─────────────────────────────────────────────── */
 
@@ -74,9 +79,19 @@ export default function Home() {
   const [pnl,       setPnl]       = useState<PnlSummary | null>(null);
   const [ohlcv,     setOhlcv]     = useState<OhlcvCandle[]>([]);
 
+  /* Marketplace State */
+  const [listings, setListings] = useState<MarketplaceListing[]>([]);
+  const [myOrders, setMyOrders] = useState<MarketplaceListing[]>([]);
+
   /* Fetch price on mount */
   useEffect(() => {
     fetchKinsPrice().then((p) => { setKinsPrice(p); setPriceLoading(false); });
+    
+    // Fetch marketplace listings in background
+    fetch('/api/marketplace/listings')
+      .then(r => r.json())
+      .then(d => setListings(d.listings || []))
+      .catch(() => {});
   }, []);
 
   /* ── Analyze ── */
@@ -113,6 +128,16 @@ export default function Home() {
 
       /* 5. Calculate P/L */
       const pnlResult = calculatePnl(enrichedTx, freshPrice?.priceUsd ?? null);
+
+      /* 6. Fetch Active Orders */
+      fetch('/api/marketplace/my-orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet: trimmed })
+      })
+      .then(r => r.json())
+      .then(d => setMyOrders(d.orders || []))
+      .catch(() => setMyOrders([]));
 
       setAnalysis(rawAnalysis);
       setEnriched(enrichedTx);
@@ -157,7 +182,7 @@ export default function Home() {
     : null;
 
   return (
-    <div className="app">
+    <AppShell>
       {/* ─── Header ─── */}
       <Header
         kinsPrice={kinsPrice}
@@ -271,13 +296,7 @@ export default function Home() {
         )}
 
         {/* ─── Loading metric skeletons ─── */}
-        {loading && (
-          <div className="metrics-grid">
-            {Array.from({ length: 12 }).map((_, i) => (
-              <MetricCard key={i} label="" value="" loading />
-            ))}
-          </div>
-        )}
+        {loading && <LoadingSkeleton />}
 
         {/* ─── Tab content ─── */}
         {analysis && pnl && !loading && (
@@ -380,13 +399,18 @@ export default function Home() {
               </>
             )}
 
+            {/* ══ MARKETPLACE ══ */}
+            {tab === 'marketplace' && (
+              <MarketplaceGrid listings={listings} />
+            )}
+
             {/* ══ TRADES ══ */}
             {tab === 'trades' && (
               <TradeTable transfers={enriched} wallet={wallet} />
             )}
 
             {/* ══ ACTIVE ORDERS ══ */}
-            {tab === 'orders' && <ActiveOrdersTab wallet={wallet} />}
+            {tab === 'orders' && <ActiveOrdersTable orders={myOrders} />}
 
             {/* ══ RESOURCES ══ */}
             {tab === 'resources' && <ResourceTable />}
@@ -458,6 +482,6 @@ export default function Home() {
         <span className="footer-sep">·</span>
         <span>Read-only · No private keys</span>
       </footer>
-    </div>
+    </AppShell>
   );
 }

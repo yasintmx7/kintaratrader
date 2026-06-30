@@ -15,11 +15,14 @@ type Props = {
   onSettings: () => void;
 };
 
+import { PriceTicker } from './PriceTicker';
+
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'overview',       label: 'Overview' },
-  { key: 'trades',         label: 'Trades' },
+  { key: 'overview',       label: 'Dashboard' },
+  { key: 'marketplace',    label: 'Marketplace' },
   { key: 'orders',         label: 'Active Orders' },
-  { key: 'resources',      label: 'Resources' },
+  { key: 'resources',      label: 'My Resources' },
+  { key: 'trades',         label: 'Trades' },
   { key: 'counterparties', label: 'Counterparties' },
   { key: 'price',          label: 'Price' },
   { key: 'settings',       label: 'Settings' },
@@ -41,24 +44,12 @@ export function Header({
           <div className="logo">
             <span className="logo-icon">◈</span>
             <span className="logo-text">
-              Kintara <span className="logo-accent">Ledger</span>
+              Kintara Trader <span className="logo-accent">Ledger</span>
             </span>
           </div>
 
           {/* KINS Price Ticker */}
-          {priceLoading ? (
-            <div className="ticker-loading">Loading price…</div>
-          ) : kinsPrice ? (
-            <div className="ticker">
-              <span className="ticker-symbol">KINS</span>
-              <span className="ticker-price">{fmtKinsPrice(kinsPrice.priceUsd)}</span>
-              <span className={`ticker-chg ${up ? 'tc-green' : 'tc-red'}`}>
-                {up ? '▲' : '▼'} {fmtPct(kinsPrice.priceChange24h)}
-              </span>
-            </div>
-          ) : (
-            <div className="ticker-na">Price unavailable</div>
-          )}
+          <PriceTicker kinsPrice={kinsPrice} loading={priceLoading} />
 
           {/* Badges */}
           <span className="hbadge hbadge-blue">● Mainnet</span>
