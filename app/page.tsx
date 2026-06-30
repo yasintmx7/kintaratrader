@@ -24,11 +24,11 @@ import type { MarketplaceListing } from '@/lib/marketplace';
 
 /* ─── Data fetching helpers ─────────────────────────────────────────────── */
 
-async function fetchAnalysis(wallet: string, maxPages: number): Promise<Analysis> {
+async function fetchAnalysis(wallet: string, maxPages: number, customCounterparties: string[]): Promise<Analysis> {
   const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ wallet, maxPages }),
+    body: JSON.stringify({ wallet, maxPages, customCounterparties }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error || 'Analysis failed');
@@ -83,6 +83,12 @@ export default function Home() {
   const [listings, setListings] = useState<MarketplaceListing[]>([]);
   const [myOrders, setMyOrders] = useState<MarketplaceListing[]>([]);
 
+  /* Price alerts and auto-refresh state */
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [alertPrice,  setAlertPrice]  = useState<number | null>(null);
+  const [alertType,   setAlertType]   = useState<'above' | 'below' | 'none'>('none');
+  const [alertTriggered, setAlertTriggered] = useState(false);
+
   /* Fetch price on mount */
   useEffect(() => {
     fetchKinsPrice().then((p) => { setKinsPrice(p); setPriceLoading(false); });
@@ -92,14 +98,85 @@ export default function Home() {
       .then(r => r.json())
       .then(d => setListings(d.listings || []))
       .catch(() => {});
+
+    // Load price alerts and refresh settings
+    try {
+      const ar = localStorage.getItem('kins_auto_refresh') === 'true';
+      setAutoRefresh(ar);
+      const ap = localStorage.getItem('kins_alert_price');
+      if (ap) setAlertPrice(Number(ap));
+      const at = localStorage.getItem('kins_alert_type') as any;
+      if (at) setAlertType(at);
+    } catch {}
   }, []);
 
+  /* Auto-refresh live price */
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(async () => {
+      const freshPrice = await fetchKinsPrice();
+      if (freshPrice) {
+        setKinsPrice(freshPrice);
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, [autoRefresh]);
+
+  /* Evaluate price alerts */
+  useEffect(() => {
+    if (!kinsPrice || alertType === 'none' || !alertPrice) {
+      setAlertTriggered(false);
+      return;
+    }
+    const current = kinsPrice.priceUsd;
+    const isTriggered =
+      alertType === 'above' ? current >= alertPrice : current <= alertPrice;
+    setAlertTriggered(isTriggered);
+  }, [kinsPrice, alertPrice, alertType]);
+
   /* ── Analyze ── */
-  const analyze = useCallback(async (w = wallet) => {
+  const analyze = useCallback(async (w = wallet, forceRefresh = false) => {
     const trimmed = w.trim();
     if (!trimmed) return;
     setLoading(true);
     setError('');
+
+    // Fetch custom counterparties list
+    let customCounterparties: string[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const stored = localStorage.getItem('kins_custom_counterparties');
+        if (stored) {
+          customCounterparties = stored
+            .split(',')
+            .map((x) => x.trim())
+            .filter(Boolean);
+        }
+      } catch {}
+    }
+
+    const cacheKey = `kins_cache_${trimmed}_${maxPages}_${customCounterparties.join(',')}`;
+
+    if (!forceRefresh && typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          const age = Date.now() - parsed.timestamp;
+          if (age < 5 * 60 * 1000) { // 5 minutes cache
+            setAnalysis(parsed.analysis);
+            setEnriched(parsed.enriched);
+            setPnl(parsed.pnl);
+            setOhlcv(parsed.ohlcv);
+            setMyOrders(parsed.myOrders);
+            if (parsed.kinsPrice) setKinsPrice(parsed.kinsPrice);
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+    }
+
     setAnalysis(null);
     setEnriched([]);
     setPnl(null);
@@ -109,7 +186,7 @@ export default function Home() {
     try {
       /* 1. Fetch analysis + current price in parallel */
       const [rawAnalysis, freshPrice] = await Promise.all([
-        fetchAnalysis(trimmed, maxPages),
+        fetchAnalysis(trimmed, maxPages, customCounterparties),
         fetchKinsPrice(),
       ]);
       if (freshPrice) setKinsPrice(freshPrice);
@@ -130,18 +207,39 @@ export default function Home() {
       const pnlResult = calculatePnl(enrichedTx, freshPrice?.priceUsd ?? null);
 
       /* 6. Fetch Active Orders */
-      fetch('/api/marketplace/my-orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wallet: trimmed })
-      })
-      .then(r => r.json())
-      .then(d => setMyOrders(d.orders || []))
-      .catch(() => setMyOrders([]));
+      let ordersData: any[] = [];
+      try {
+        const r = await fetch('/api/marketplace/my-orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ wallet: trimmed })
+        });
+        const d = await r.json();
+        ordersData = d.orders || [];
+      } catch {}
+      setMyOrders(ordersData);
 
       setAnalysis(rawAnalysis);
       setEnriched(enrichedTx);
       setPnl(pnlResult);
+
+      // Save to cache
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(
+            cacheKey,
+            JSON.stringify({
+              timestamp: Date.now(),
+              analysis: rawAnalysis,
+              enriched: enrichedTx,
+              pnl: pnlResult,
+              ohlcv: candleData,
+              myOrders: ordersData,
+              kinsPrice: freshPrice,
+            })
+          );
+        } catch {}
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
@@ -172,10 +270,10 @@ export default function Home() {
   const bestTrade  = enriched.length > 0
     ? enriched.reduce((b, t) => (t.txUsdValue ?? 0) > (b.txUsdValue ?? 0) ? t : b, enriched[0])
     : null;
-  const worstTrade = enriched.filter((t) => t.direction === 'out').length > 0
-    ? enriched.filter((t) => t.direction === 'out')
+  const biggestBuyTx = enriched.filter((t) => t.direction === 'in').length > 0
+    ? enriched.filter((t) => t.direction === 'in')
         .reduce((w, t) => (t.txUsdValue ?? 0) > (w.txUsdValue ?? 0) ? t : w,
-          enriched.filter((t) => t.direction === 'out')[0])
+          enriched.filter((t) => t.direction === 'in')[0])
     : null;
   const lastTx = enriched.length > 0
     ? enriched.reduce((l, t) => t.timestamp > l.timestamp ? t : l, enriched[0])
@@ -191,10 +289,28 @@ export default function Home() {
         analysisLoaded={!!analysis}
         tab={tab}
         setTab={setTab}
-        onRefresh={() => analysis && analyze()}
+        onRefresh={() => analysis && analyze(wallet, true)}
         onExport={handleExport}
         onSettings={() => setTab('settings')}
       />
+
+      {alertTriggered && kinsPrice && (
+        <div style={{
+          background: 'rgba(239, 68, 68, 0.15)',
+          borderBottom: '1px solid #ef4444',
+          color: '#ef4444',
+          padding: '12px 20px',
+          textAlign: 'center',
+          fontSize: '13px',
+          fontWeight: 'bold',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '8px'
+        }}>
+          🚨 PRICE ALERT TRIGGERED: KINS price is ${kinsPrice.priceUsd.toFixed(8)} (target: {alertType === 'above' ? '>=' : '<='} ${alertPrice})
+        </div>
+      )}
 
       <main className="main">
         {/* ─── Wallet Input ─── */}
@@ -310,16 +426,16 @@ export default function Home() {
                     value={kinsPrice ? fmtKinsPrice(kinsPrice.priceUsd) : '—'}
                     sub={kinsPrice ? `${fmtPct(kinsPrice.priceChange24h)} 24h · via DexScreener` : 'Unavailable'}
                     color="blue" />
-                  <MetricCard label="Total Buy / Spent"
+                  <MetricCard label="Total Buy / Received"
                     value={fmtKins(pnl.totalBuyKins, 2) + ' KINS'}
                     usd={fmtUsd(pnl.totalBuyUsd)}
-                    sub={`${s!.buyCount} outgoing transfers`}
-                    color="red" />
-                  <MetricCard label="Total Sell / Received"
+                    sub={`${s!.buyCount} incoming transfers`}
+                    color="green" />
+                  <MetricCard label="Total Sell / Sent"
                     value={fmtKins(pnl.totalSellKins, 2) + ' KINS'}
                     usd={fmtUsd(pnl.totalSellUsd)}
-                    sub={`${s!.sellCount} incoming transfers`}
-                    color="green" />
+                    sub={`${s!.sellCount} outgoing transfers`}
+                    color="red" />
                   <MetricCard label="Realized P/L"
                     value={fmtUsd(pnl.realizedProfitUsd)}
                     sub={`ROI: ${fmtPct(pnl.roiPercent)}`}
@@ -335,12 +451,12 @@ export default function Home() {
                     color={pnl.roiPercent == null ? 'default' : pnl.roiPercent >= 0 ? 'green' : 'red'} />
                   <MetricCard label="Buy Count"
                     value={String(s!.buyCount)}
-                    sub="Outgoing KINS transfers"
-                    color="amber" />
+                    sub="Incoming KINS transfers"
+                    color="green" />
                   <MetricCard label="Sell Count"
                     value={String(s!.sellCount)}
-                    sub="Incoming KINS transfers"
-                    color="purple" />
+                    sub="Outgoing KINS transfers"
+                    color="red" />
                   <MetricCard label="Active Orders"
                     value="—"
                     sub="Marketplace API not configured"
@@ -350,12 +466,12 @@ export default function Home() {
                     sub={bestTrade ? fmtDateShort(bestTrade.date) : 'No data'}
                     color="green" />
                   <MetricCard label="Biggest Buy"
-                    value={worstTrade ? fmtKins(worstTrade.amount, 2) + ' K' : '—'}
-                    usd={worstTrade ? fmtUsd(worstTrade.txUsdValue) : undefined}
-                    color="red" />
+                    value={biggestBuyTx ? fmtKins(biggestBuyTx.amount, 2) + ' K' : '—'}
+                    usd={biggestBuyTx ? fmtUsd(biggestBuyTx.txUsdValue) : undefined}
+                    color="green" />
                   <MetricCard label="Last Activity"
                     value={lastTx ? fmtDateShort(lastTx.date) : '—'}
-                    sub={lastTx ? (lastTx.direction === 'in' ? '↓ Sell/In' : '↑ Buy/Out') : ''}
+                    sub={lastTx ? (lastTx.direction === 'in' ? '↓ Buy/In' : '↑ Sell/Out') : ''}
                     color="blue" />
                 </div>
 
@@ -413,7 +529,7 @@ export default function Home() {
             {tab === 'orders' && <ActiveOrdersTable orders={myOrders} />}
 
             {/* ══ RESOURCES ══ */}
-            {tab === 'resources' && <ResourceTable />}
+            {tab === 'resources' && <ResourceTable transfers={enriched} wallet={wallet} />}
 
             {/* ══ COUNTERPARTIES ══ */}
             {tab === 'counterparties' && (

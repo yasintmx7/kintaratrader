@@ -96,3 +96,57 @@ export function getItem(id: string): Item {
 }
 
 export const ALL_ITEMS = Object.values(ITEMS);
+
+export function getDefaultPrice(itemId: string): number {
+  switch (itemId.toLowerCase()) {
+    case 'coal': return 2;
+    case 'fish': return 3;
+    case 'stone': return 4;
+    case 'wood': return 5;
+    case 'cooked fish': return 8;
+    case 'metal': return 12;
+    case 'gold': return 50;
+    case 'axe': return 80;
+    case 'pickaxe': return 80;
+    case 'training sword': return 100;
+    case 'axe lv.2': return 250;
+    case 'pickaxe lv.2': return 250;
+    case 'wild sword': return 400;
+    default: return 10;
+  }
+}
+
+export function getItemForTransfer(amount: number, signature: string): { item: Item; quantity: number } {
+  let hash = 0;
+  for (let i = 0; i < signature.length; i++) {
+    hash = signature.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  hash = Math.abs(hash);
+
+  const candidates = Object.values(ITEMS).filter(item => item.id !== 'kins');
+  const item = candidates[hash % candidates.length];
+
+  let unitPrice = 10;
+  if (typeof window !== 'undefined') {
+    try {
+      const stored = localStorage.getItem('kins_item_prices');
+      if (stored) {
+        const overrides = JSON.parse(stored);
+        if (overrides[item.id] !== undefined && Number(overrides[item.id]) > 0) {
+          unitPrice = Number(overrides[item.id]);
+        } else {
+          unitPrice = getDefaultPrice(item.id);
+        }
+      } else {
+        unitPrice = getDefaultPrice(item.id);
+      }
+    } catch {
+      unitPrice = getDefaultPrice(item.id);
+    }
+  } else {
+    unitPrice = getDefaultPrice(item.id);
+  }
+
+  const quantity = Math.max(1, Math.round(amount / unitPrice));
+  return { item, quantity };
+}

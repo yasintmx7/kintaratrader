@@ -43,12 +43,12 @@ export function calculatePnl(
   transfers: EnrichedTransfer[],
   currentPriceUsd: number | null,
 ): PnlSummary {
-  const buys  = transfers.filter((t) => t.direction === 'out');
-  const sells = transfers.filter((t) => t.direction === 'in');
+  const buys  = transfers.filter((t) => t.direction === 'in');
+  const sells = transfers.filter((t) => t.direction === 'out');
 
   const totalBuyKins  = buys.reduce((s, t) => s + t.amount, 0);
   const totalSellKins = sells.reduce((s, t) => s + t.amount, 0);
-  const netKins       = totalSellKins - totalBuyKins;
+  const netKins       = totalBuyKins - totalSellKins;
 
   const hasHistoricalPrices = transfers.some((t) => t.priceSource === 'historical');
   const hasPrices = transfers.some((t) => t.priceSource !== 'unavailable');

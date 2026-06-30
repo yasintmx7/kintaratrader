@@ -30,8 +30,8 @@ export function DailyChart({ transfers }: { transfers: EnrichedTransfer[] }) {
   for (const t of transfers) {
     const d = t.date.slice(0, 10);
     if (!map[d]) map[d] = { date: d, buy: 0, sell: 0 };
-    if (t.direction === 'out') map[d].buy  += t.amount;
-    else                        map[d].sell += t.amount;
+    if (t.direction === 'in') map[d].buy  += t.amount;
+    else                      map[d].sell += t.amount;
   }
   const data = Object.values(map)
     .sort((a, b) => a.date.localeCompare(b.date))
@@ -48,12 +48,12 @@ export function DailyChart({ transfers }: { transfers: EnrichedTransfer[] }) {
         <YAxis hide />
         <Tooltip {...TIP}
           formatter={(v: unknown, name: unknown) =>
-            [`${fmtKins(Number(v), 2)} KINS`, name === 'buy' ? 'Buy/Spent' : 'Sell/Received']}
+            [`${fmtKins(Number(v), 2)} KINS`, name === 'buy' ? 'Buy / Received' : 'Sell / Sent']}
         />
         <Legend iconType="square" iconSize={7} wrapperStyle={{ fontSize: 10, color: '#475569' }}
-          formatter={(v: string) => v === 'buy' ? 'Buy / Out' : 'Sell / In'} />
-        <Bar dataKey="buy"  fill="#ef4444" opacity={0.85} radius={[2,2,0,0]} maxBarSize={20} />
-        <Bar dataKey="sell" fill="#22c55e" opacity={0.85} radius={[2,2,0,0]} maxBarSize={20} />
+          formatter={(v: string) => v === 'buy' ? 'Buy / In' : 'Sell / Out'} />
+        <Bar dataKey="buy"  fill="#22c55e" opacity={0.85} radius={[2,2,0,0]} maxBarSize={20} />
+        <Bar dataKey="sell" fill="#ef4444" opacity={0.85} radius={[2,2,0,0]} maxBarSize={20} />
       </BarChart>
     </ResponsiveContainer>
   );
@@ -63,8 +63,8 @@ export function DailyChart({ transfers }: { transfers: EnrichedTransfer[] }) {
 
 export function BuySellSummaryChart({ pnl }: { pnl: PnlSummary }) {
   const data = [
-    { name: 'Buy / Spent',    value: pnl.totalBuyKins },
-    { name: 'Sell / Received',value: pnl.totalSellKins },
+    { name: 'Buy / Received',    value: pnl.totalBuyKins },
+    { name: 'Sell / Sent',value: pnl.totalSellKins },
   ];
   return (
     <ResponsiveContainer width="100%" height={130}>
@@ -76,8 +76,8 @@ export function BuySellSummaryChart({ pnl }: { pnl: PnlSummary }) {
           formatter={(v: unknown) => [`${fmtKins(Number(v), 2)} KINS`, 'Amount']} />
         <Bar dataKey="value" radius={[0, 2, 2, 0]}
           background={{ fill: 'rgba(255,255,255,0.02)' }}>
-          <Cell fill="#ef4444" />
           <Cell fill="#22c55e" />
+          <Cell fill="#ef4444" />
         </Bar>
       </BarChart>
     </ResponsiveContainer>
@@ -93,8 +93,8 @@ export function CumulativePnlChart({ transfers }: { transfers: EnrichedTransfer[
     .sort((a, b) => a.timestamp - b.timestamp)
     .map((t) => {
       const val = t.txUsdValue ?? 0;
-      if (t.direction === 'in')  cum += val;
-      if (t.direction === 'out') cum -= val;
+      if (t.direction === 'out') cum += val;
+      if (t.direction === 'in')  cum -= val;
       return { date: t.date.slice(0, 10), pnl: parseFloat(cum.toFixed(4)) };
     });
 

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import type { EnrichedTransfer } from '@/types';
 import { fmtDate, fmtKins, fmtUsd, fmtAddr } from '@/lib/format';
 import { exportTradesCsv } from '@/lib/export';
+import { getItemForTransfer, ALL_ITEMS } from '@/lib/items';
 
 type Filter  = 'all' | 'buy' | 'sell';
 type SortKey = 'newest' | 'oldest' | 'bigKins' | 'bigUsd';
@@ -19,11 +20,13 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
   const [dateFrom,setDateFrom]= useState('');
   const [dateTo,  setDateTo]  = useState('');
   const [page,    setPage]    = useState(1);
+  const [itemCat, setItemCat] = useState('all');
+  const [itemId,  setItemId]  = useState('all');
 
   const filtered = useMemo(() => {
     let list = [...transfers];
-    if (filter === 'buy')  list = list.filter((t) => t.direction === 'out');
-    if (filter === 'sell') list = list.filter((t) => t.direction === 'in');
+    if (filter === 'buy')  list = list.filter((t) => t.direction === 'in');
+    if (filter === 'sell') list = list.filter((t) => t.direction === 'out');
     if (search) {
       const q = search.toLowerCase();
       list = list.filter((t) =>
@@ -38,8 +41,20 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
     if (sort === 'oldest')  list.sort((a, b) => a.timestamp - b.timestamp);
     if (sort === 'bigKins') list.sort((a, b) => b.amount - a.amount);
     if (sort === 'bigUsd')  list.sort((a, b) => (b.txUsdValue ?? 0) - (a.txUsdValue ?? 0));
+    if (itemCat !== 'all') {
+      list = list.filter((t) => {
+        const { item } = getItemForTransfer(t.amount, t.signature);
+        return item.category === itemCat;
+      });
+    }
+    if (itemId !== 'all') {
+      list = list.filter((t) => {
+        const { item } = getItemForTransfer(t.amount, t.signature);
+        return item.id === itemId;
+      });
+    }
     return list;
-  }, [transfers, filter, sort, search, minKins, maxKins, dateFrom, dateTo]);
+  }, [transfers, filter, sort, search, minKins, maxKins, dateFrom, dateTo, itemCat, itemId]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageRows   = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
@@ -76,7 +91,7 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
               onClick={() => handleFilterChange(f)}
               className={`fpill ${filter === f ? `fp-${f}` : ''}`}
             >
-              {f === 'all' ? 'All' : f === 'buy' ? '↑ Buys' : '↓ Sells'}
+              {f === 'all' ? 'All' : f === 'buy' ? '↓ Buys' : '↑ Sells'}
             </button>
           ))}
         </div>
@@ -91,6 +106,22 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
             onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} />
           <input className="fi fi-sm" type="date" placeholder="To" value={dateTo}
             onChange={(e) => { setDateTo(e.target.value); setPage(1); }} />
+          <select className="fsel" value={itemCat}
+            onChange={(e) => { setItemCat(e.target.value); setItemId('all'); setPage(1); }}>
+            <option value="all">All Categories</option>
+            <option value="Materials">Materials</option>
+            <option value="Food">Food</option>
+            <option value="Tools">Tools</option>
+            <option value="Weapons">Weapons</option>
+            <option value="Currency">Currency</option>
+          </select>
+          <select className="fsel" value={itemId}
+            onChange={(e) => { setItemId(e.target.value); setPage(1); }}>
+            <option value="all">All Items</option>
+            {ALL_ITEMS.filter(i => i.id !== 'kins' && (itemCat === 'all' || i.category === itemCat)).map(i => (
+              <option key={i.id} value={i.id}>{i.emoji} {i.name}</option>
+            ))}
+          </select>
           <select className="fsel" value={sort}
             onChange={(e) => handleSortChange(e.target.value as SortKey)}>
             <option value="newest">Newest</option>
@@ -127,14 +158,19 @@ export function TradeTable({ transfers, wallet }: { transfers: EnrichedTransfer[
                   <td className="td-dim">{fmtDate(t.date)}</td>
                   <td>
                     <span className={`type-pill ${t.direction === 'in' ? 'tp-in' : 'tp-out'}`}>
-                      {t.direction === 'in' ? '↓ Sell' : '↑ Buy'}
+                      {t.direction === 'in' ? '↓ Buy' : '↑ Sell'}
                     </span>
                   </td>
                   <td>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ fontSize: '14px' }}>📦</span>
-                      <span className="td-dim">Unknown</span>
-                    </div>
+                    {(() => {
+                      const { item } = getItemForTransfer(t.amount, t.signature);
+                      return (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{ fontSize: '14px' }}>{item.emoji}</span>
+                          <span style={{ color: item.color, fontWeight: '600' }}>{item.name}</span>
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td className={`td-mono ${t.direction === 'in' ? 'td-green' : 'td-red'}`}>
                     {t.direction === 'in' ? '+' : '−'}{fmtKins(t.amount, 4)}

@@ -69,12 +69,15 @@ export async function POST(req: NextRequest) {
     const body      = await req.json();
     const wallet    = String(body.wallet   || '').trim();
     const maxPages  = Math.min(Number(body.maxPages || 10), 50);
+    const clientCounterparties = Array.isArray(body.customCounterparties)
+      ? body.customCounterparties.map((x: unknown) => String(x || '').trim()).filter(Boolean)
+      : [];
 
     if (!isValidSolanaAddress(wallet)) {
       return NextResponse.json({ error: 'Invalid Solana wallet address' }, { status: 400 });
     }
 
-    const allowed = allowedCounterparties();
+    const allowed = [...allowedCounterparties(), ...clientCounterparties];
     const txs     = await fetchParsedTxs(wallet, maxPages);
 
     const transfers: Transfer[] = [];
@@ -140,8 +143,8 @@ export async function POST(req: NextRequest) {
       }))
       .sort((a, b) => b.count - a.count);
 
-    const buys  = transfers.filter((t) => t.direction === 'out');
-    const sells = transfers.filter((t) => t.direction === 'in');
+    const buys  = transfers.filter((t) => t.direction === 'in');
+    const sells = transfers.filter((t) => t.direction === 'out');
     const totalBuyKins  = buys.reduce((s, t) => s + t.amount, 0);
     const totalSellKins = sells.reduce((s, t) => s + t.amount, 0);
 
@@ -156,7 +159,7 @@ export async function POST(req: NextRequest) {
         sellCount:      sells.length,
         totalBuyKins,
         totalSellKins,
-        netKins:        totalSellKins - totalBuyKins,
+        netKins:        totalBuyKins - totalSellKins,
       },
       counterparties,
       transfers,
