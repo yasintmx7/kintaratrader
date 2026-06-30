@@ -5,15 +5,16 @@
     "start": "next start"
   },
   "dependencies": {
+    "@solana/web3.js": "latest",
     "next": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "@solana/web3.js": "latest"
+    "recharts": "^3.9.1"
   },
   "devDependencies": {
-    "typescript": "latest",
     "@types/node": "latest",
     "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react-dom": "latest",
+    "typescript": "latest"
   }
 }
