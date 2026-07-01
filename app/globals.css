@@ -43,6 +43,10 @@
   --font: 'Inter',          -apple-system, system-ui, sans-serif;
   --mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
 
+  --kt-orange:   #f97316;
+  --kt-orange-b: rgba(249, 115, 22, 0.15);
+  --kt-bg-darker:#080b0f;
+  
   /* Geometry */
   --r:    4px;
   --r-sm: 2px;
@@ -573,6 +577,7 @@ input, select { font-family: var(--font); }
 .badge-red   { background: var(--kt-red-b);   border-color: var(--kt-red); color: var(--kt-red); }
 .badge-blue  { background: var(--kt-blue-b);  border-color: var(--kt-blue); color: var(--kt-blue); }
 .badge-gold  { background: var(--kt-gold-b);  border-color: var(--kt-gold); color: var(--kt-gold); }
+.badge-orange{ background: var(--kt-orange-b); border-color: var(--kt-orange); color: var(--kt-orange); }
 
 /* ─── Price tab ──────────────────────────────────────────────────────────── */
 

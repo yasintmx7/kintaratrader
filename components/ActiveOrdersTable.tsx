@@ -30,7 +30,7 @@ export function ActiveOrdersTable({ orders }: { orders: MarketplaceListing[] }) 
             <tr key={o.id}>
               <td>{o.itemName}</td>
               <td className="td-mono">{o.quantity}</td>
-              <td className="td-mono">{o.totalPriceKins ? `${o.totalPriceKins} KINS` : '---'}</td>
+              <td className="td-mono">{o.currency === 'token' ? `${o.priceGold} KINS` : `${o.priceGold} Gold`}</td>
               <td>{o.status}</td>
             </tr>
           ))}

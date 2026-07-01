@@ -83,6 +83,41 @@ export const ITEMS: Record<string, Item> = {
     emoji: '⚔️', color: '#3fb950', bgColor: 'rgba(63, 185, 80, 0.1)',
     rarity: 'Uncommon', iconPath: '/items/sword_2.svg',
   },
+  'molten rock': {
+    id: 'molten rock', name: 'Molten Rock', category: 'Materials',
+    emoji: '🌋', color: '#ff5f40', bgColor: 'rgba(255, 95, 64, 0.1)',
+    rarity: 'Rare', iconPath: '/items/molten_rock.svg',
+  },
+  'strength potion': {
+    id: 'strength potion', name: 'Strength Potion', category: 'Potions',
+    emoji: '🧪', color: '#ff3b30', bgColor: 'rgba(255, 59, 48, 0.1)',
+    rarity: 'Rare', iconPath: '/items/strength_potion.svg',
+  },
+  'shield potion': {
+    id: 'shield potion', name: 'Shield Potion', category: 'Potions',
+    emoji: '🧪', color: '#34c759', bgColor: 'rgba(52, 199, 89, 0.1)',
+    rarity: 'Rare', iconPath: '/items/shield_potion.svg',
+  },
+  'wild sword lv.12': {
+    id: 'wild sword lv.12', name: 'Wild Sword Lv.12', category: 'Weapons',
+    emoji: '⚔️', color: '#a371f7', bgColor: 'rgba(163, 113, 247, 0.1)',
+    rarity: 'Legendary', iconPath: '/items/sword_wild_12.svg',
+  },
+  'mounts': {
+    id: 'mounts', name: 'Mounts', category: 'Mounts',
+    emoji: '🐴', color: '#f2a900', bgColor: 'rgba(242, 169, 0, 0.1)',
+    rarity: 'Rare', iconPath: '/items/mounts.svg',
+  },
+  'pets': {
+    id: 'pets', name: 'Pets', category: 'Pets',
+    emoji: '🐾', color: '#ff2d55', bgColor: 'rgba(255, 45, 85, 0.1)',
+    rarity: 'Rare', iconPath: '/items/pets.svg',
+  },
+  'cosmetics': {
+    id: 'cosmetics', name: 'Cosmetics', category: 'Cosmetics',
+    emoji: '✨', color: '#007aff', bgColor: 'rgba(0, 122, 255, 0.1)',
+    rarity: 'Rare', iconPath: '/items/cosmetics.svg',
+  },
 };
 
 export const UNKNOWN_ITEM: Item = {

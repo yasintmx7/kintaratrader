@@ -88,7 +88,7 @@ export type PnlSummary = {
   hasHistoricalPrices: boolean;
 };
 
-export type Tab = 'overview' | 'marketplace' | 'trades' | 'orders' | 'resources' | 'counterparties' | 'price' | 'settings';
+export type Tab = 'marketplace' | 'floor' | 'watchlist' | 'mylistings' | 'wallet' | 'activity' | 'items' | 'settings' | 'overview' | 'trades' | 'orders' | 'resources' | 'counterparties' | 'price';
 
 export type AppState = {
   wallet: string;
