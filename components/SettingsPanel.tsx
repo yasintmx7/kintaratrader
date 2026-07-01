@@ -9,9 +9,10 @@ type Props = {
   kinsMint?: string;
   filtered?: boolean;
   kinsPrice?: { priceUsd: number } | null;
+  wallet?: string;
 };
 
-export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsPrice }: Props) {
+export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsPrice, wallet }: Props) {
   const [customPrices, setCustomPrices] = useState<Record<string, string>>({});
   const [customCounterparties, setCustomCounterparties] = useState('');
 
@@ -19,6 +20,7 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [alertPrice, setAlertPrice] = useState('');
   const [alertType, setAlertType] = useState<'above' | 'below' | 'none'>('none');
+  const [sellerName, setSellerName] = useState('');
 
   // Load from localStorage on mount
   useEffect(() => {
@@ -41,8 +43,24 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
 
       const at = (localStorage.getItem('kins_alert_type') as any) || 'none';
       setAlertType(at);
+
+      const sn = localStorage.getItem('kins_seller_name') || '';
+      setSellerName(sn);
     } catch {}
   }, []);
+
+  const handleSellerNameChange = (val: string) => {
+    setSellerName(val);
+    try {
+      localStorage.setItem('kins_seller_name', val);
+      if (wallet) {
+        const mappingStr = localStorage.getItem('kins_wallet_to_seller') || '{}';
+        const mapping = JSON.parse(mappingStr);
+        mapping[wallet.toLowerCase()] = val;
+        localStorage.setItem('kins_wallet_to_seller', JSON.stringify(mapping));
+      }
+    } catch {}
+  };
 
   const handlePriceChange = (itemId: string, val: string) => {
     const updated = { ...customPrices, [itemId]: val };
@@ -88,6 +106,7 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
         localStorage.removeItem('kins_auto_refresh');
         localStorage.removeItem('kins_alert_price');
         localStorage.removeItem('kins_alert_type');
+        localStorage.removeItem('kins_seller_name');
         // Clear all caches too
         Object.keys(localStorage)
           .filter(k => k.startsWith('kins_cache_'))
@@ -98,6 +117,7 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
       setAutoRefresh(false);
       setAlertPrice('');
       setAlertType('none');
+      setSellerName('');
       window.location.reload();
     }
   };
@@ -184,6 +204,31 @@ export function SettingsPanel({ maxPages, setMaxPages, kinsMint, filtered, kinsP
               />
             </div>
           </div>
+        </div>
+
+        {/* Marketplace Seller Name */}
+        <div className="s-row" style={{ borderBottom: '1px solid var(--kt-border)', paddingBottom: '24px' }}>
+          <div className="s-label">Marketplace Seller Name (Username)</div>
+          <div className="s-desc">
+            Enter your Kintara in-game username/seller name to track your active listings and orders.
+          </div>
+          <input
+            type="text"
+            className="fi"
+            style={{
+              width: '100%',
+              maxWidth: '400px',
+              padding: '10px',
+              background: 'rgba(0, 0, 0, 0.2)',
+              border: '1px solid var(--kt-border)',
+              borderRadius: '6px',
+              color: 'var(--kt-text)',
+              marginTop: '10px'
+            }}
+            placeholder="e.g., DIWA, Virtuos, Mohamad67km..."
+            value={sellerName}
+            onChange={(e) => handleSellerNameChange(e.target.value)}
+          />
         </div>
 
         {/* Custom Escrow / Counterparty Addresses */}

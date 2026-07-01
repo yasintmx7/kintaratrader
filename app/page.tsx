@@ -209,10 +209,11 @@ export default function Home() {
       /* 6. Fetch Active Orders */
       let ordersData: any[] = [];
       try {
+        const sellerName = typeof window !== 'undefined' ? localStorage.getItem('kins_seller_name') || '' : '';
         const r = await fetch('/api/marketplace/my-orders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ wallet: trimmed })
+          body: JSON.stringify({ wallet: trimmed, sellerName })
         });
         const d = await r.json();
         ordersData = d.orders || [];
@@ -226,6 +227,13 @@ export default function Home() {
       // Save to cache
       if (typeof window !== 'undefined') {
         try {
+          const sellerName = localStorage.getItem('kins_seller_name') || '';
+          if (sellerName) {
+            const mappingStr = localStorage.getItem('kins_wallet_to_seller') || '{}';
+            const mapping = JSON.parse(mappingStr);
+            mapping[trimmed.toLowerCase()] = sellerName;
+            localStorage.setItem('kins_wallet_to_seller', JSON.stringify(mapping));
+          }
           localStorage.setItem(
             cacheKey,
             JSON.stringify({
@@ -458,9 +466,11 @@ export default function Home() {
                     sub="Outgoing KINS transfers"
                     color="red" />
                   <MetricCard label="Active Orders"
-                    value="—"
-                    sub="Marketplace API not configured"
-                    color="default" />
+                    value={myOrders.length > 0 ? String(myOrders.length) : '0'}
+                    sub={typeof window !== 'undefined' && localStorage.getItem('kins_seller_name')
+                      ? `For seller: ${localStorage.getItem('kins_seller_name')}`
+                      : "Set Seller Name in Settings"}
+                    color={myOrders.length > 0 ? 'green' : 'default'} />
                   <MetricCard label="Best Trade"
                     value={bestTrade ? fmtUsd(bestTrade.txUsdValue) : '—'}
                     sub={bestTrade ? fmtDateShort(bestTrade.date) : 'No data'}
@@ -558,6 +568,7 @@ export default function Home() {
                 kinsMint={analysis.kinsMint}
                 filtered={analysis.filteredByMarketplaceCounterparties}
                 kinsPrice={kinsPrice}
+                wallet={wallet}
               />
             )}
           </>
@@ -573,6 +584,7 @@ export default function Home() {
             setMaxPages={setMaxPages}
             filtered={false}
             kinsPrice={kinsPrice}
+            wallet={wallet}
           />
         )}
 

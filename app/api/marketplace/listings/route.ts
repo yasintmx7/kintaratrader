@@ -9,8 +9,8 @@ export async function GET() {
     return NextResponse.json({
       listings,
       count: listings.length,
-      status: "unavailable",
-      message: "Public marketplace data source not configured."
+      status: "success",
+      message: "Marketplace listings retrieved successfully."
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch listings';
