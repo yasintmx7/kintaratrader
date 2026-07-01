@@ -88,8 +88,10 @@ export default function Home() {
   const [ohlcv,     setOhlcv]     = useState<OhlcvCandle[]>([]);
 
   /* Marketplace State */
-  const [listings, setListings] = useState<MarketplaceListing[]>([]);
-  const [myOrders, setMyOrders] = useState<MarketplaceListing[]>([]);
+  const [listings, setListings]           = useState<MarketplaceListing[]>([]);
+  const [listingsTotal, setListingsTotal] = useState(0);
+  const [listingsError, setListingsError] = useState('');
+  const [myOrders, setMyOrders]           = useState<MarketplaceListing[]>([]);
   const [loadingListings, setLoadingListings] = useState(false);
 
   /* Price alerts and auto-refresh state */
@@ -100,14 +102,24 @@ export default function Home() {
 
   const refreshListings = useCallback(async () => {
     setLoadingListings(true);
+    setListingsError('');
     try {
       const r = await fetch('/api/marketplace/listings?limit=200');
       const d = await r.json();
-      if (d.listings) {
+      console.log('Marketplace API response', d);
+      if (d.ok && Array.isArray(d.listings)) {
+        console.log('Normalized listings', d.listings);
         setListings(d.listings);
+        setListingsTotal(d.total ?? d.listings.length);
+      } else {
+        const errMsg = d.error || 'Unknown API error';
+        setListingsError(errMsg);
+        console.error('[refreshListings] Error:', errMsg, d);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setListingsError(msg);
+      console.error('[refreshListings] Fetch failed:', msg);
     } finally {
       setLoadingListings(false);
     }
@@ -321,7 +333,7 @@ export default function Home() {
     return minGold;
   }, [listings]);
 
-  const liveCount = listings.length;
+  const liveCount     = listingsTotal || listings.length;
   const availableCount = useMemo(() => listings.filter(l => l.status === 'available' || l.status === 'available_expired_lock').length, [listings]);
   const lockedCount = useMemo(() => listings.filter(l => l.status === 'locked').length, [listings]);
 
@@ -365,7 +377,7 @@ export default function Home() {
         
         {/* ══ MARKETPLACE ══ */}
         {tab === 'marketplace' && (
-          <MarketplaceGrid listings={listings} kinsPrice={kinsPrice} onRefresh={refreshListings} loading={loadingListings} />
+          <MarketplaceGrid listings={listings} total={listingsTotal} kinsPrice={kinsPrice} onRefresh={refreshListings} loading={loadingListings} lastError={listingsError} />
         )}
 
         {/* ══ FLOOR PRICES ══ */}
